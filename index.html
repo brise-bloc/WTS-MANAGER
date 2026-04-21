@@ -491,10 +491,16 @@ function ReceiptEditor({ receipts, setReceipts, journal, setJournal, debcred, se
   const [form, setForm] = useState({
     number:nextNum, date:TODAY(), client:"", obs:"",
     items:WEIGHTS.map(w=>({...w,qty:"",effectivePrice:w.price,adjusted:false})),
-    statut:"non-paye"
+    statut:"non-paye",
+    avances:[]
   });
   const [saved,setSaved]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [savePct,setSavePct]=useState(0);
   const [warn,setWarn]=useState([]);
+  const [avanceSaisie,setAvanceSaisie]=useState("");
+  const [customClient,setCustomClient]=useState("");
+  const [selCat,setSelCat]=useState("");
 
   const total = form.items.reduce((s,i)=>s+(Number(i.qty)||0)*(i.effectivePrice||0),0);
   const totalQte = form.items.reduce((s,i)=>s+(Number(i.qty)||0),0);
@@ -510,25 +516,50 @@ function ReceiptEditor({ receipts, setReceipts, journal, setJournal, debcred, se
     setForm(f=>({...f,items}));
   };
 
-  const handleSave=()=>{
-    if(!form.client){alert("Sélectionnez un client.");return;}
-    if(totalQte===0){alert("Ajoutez au moins un article.");return;}
-    const rec={...form,id:Date.now(),savedAt:new Date().toISOString()};
+  const totalAvances = form.avances.reduce((s,a)=>s+Number(a.montant||0),0);
+  const resteAPayer = total - totalAvances;
+
+  const addAvance=()=>{
+    const m=Number(avanceSaisie)||0;
+    if(m<=0) return;
+    setForm(f=>({...f,avances:[...f.avances,{date:TODAY(),montant:m,id:Date.now()}]}));
+    setAvanceSaisie("");
+  };
+
+  const removeAvance=(id)=>{
+    setForm(f=>({...f,avances:f.avances.filter(a=>a.id!==id)}));
+  };
+
+  const doSave=()=>{
+    const clientName=form.client||customClient;
+    const rec={...form,client:clientName,id:Date.now(),savedAt:new Date().toISOString()};
     setReceipts(p=>[rec,...p]);
     const entries=form.items.filter(i=>Number(i.qty)>0).map(i=>({
-      id:Date.now()+Math.random(),date:form.date,client:form.client,categorie:i.label,code:i.code,
+      id:Date.now()+Math.random(),date:form.date,client:clientName,categorie:i.label,code:i.code,
       qty:Number(i.qty),prix:i.effectivePrice,montant:Number(i.qty)*(i.effectivePrice||0),
-      receiptId:rec.id
+      receiptId:rec.id,statut:form.statut
     }));
     setJournal(p=>[...entries,...p]);
     const lastSolde=debcred.length>0?debcred[0].solde:0;
-    setDebCred(p=>[{id:Date.now()+Math.random(),date:form.date,op:form.client,credit:total,debit:0,
+    setDebCred(p=>[{id:Date.now()+Math.random(),date:form.date,op:clientName,credit:total,debit:0,
       solde:lastSolde+total,receiptId:rec.id,type:"vente",cpt:"701/57"},...p]);
     const ns={...stock};
     form.items.filter(i=>Number(i.qty)>0).forEach(i=>{ ns[i.col]=Math.max(0,(ns[i.col]||0)-Number(i.qty)); });
     setStock(ns);
-    setSaved(true); setTimeout(()=>setSaved(false),2500);
+    setSaved(true); setTimeout(()=>setSaved(false),3000);
     onNpRequired(rec);
+  };
+
+  const handleSave=()=>{
+    const clientName=form.client||customClient;
+    if(!clientName){alert("Sélectionnez ou saisissez un client.");return;}
+    if(totalQte===0){alert("Ajoutez au moins un article.");return;}
+    setSaving(true); setSavePct(0);
+    let pct=0;
+    const iv=setInterval(()=>{
+      pct+=1; setSavePct(pct);
+      if(pct>=100){clearInterval(iv);setSaving(false);doSave();}
+    },100);
   };
 
   return (
@@ -546,30 +577,76 @@ function ReceiptEditor({ receipts, setReceipts, journal, setJournal, debcred, se
               <input style={S.inp} type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
             </Field>
             <Field label="Client" style={{marginBottom:12}}>
-              <select style={S.inp} value={form.client} onChange={e=>setForm({...form,client:e.target.value})}>
-                <option value="">— Sélectionner —</option>
+              <select style={{...S.inp,marginBottom:6}} value={form.client} onChange={e=>{setForm({...form,client:e.target.value});if(e.target.value)setCustomClient("");}}>
+                <option value="">— Sélectionner dans la liste —</option>
                 {CLIENTS.map(c=><option key={c}>{c}</option>)}
               </select>
+              {!form.client&&<input type="text" style={{...S.inp,fontSize:12}} placeholder="✏️ Ou saisir le nom du client..." value={customClient} onChange={e=>setCustomClient(e.target.value)}/>}
+              {(form.client||customClient)&&<div style={{fontSize:11,color:VIO,fontWeight:600,padding:"3px 8px",background:"#f3e5f5",borderRadius:4,marginTop:4}}>✓ {form.client||customClient}</div>}
             </Field>
             <Field label="Statut">
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {[["paye","✓ Payé comptant"],["non-paye","✗ Non payé"],["partiel","⟳ Paiement partiel"]].map(([v,l])=>(
+                {[["paye","✓ Payé comptant"],["non-paye","✗ Non payé"],["partiel","⟳ Paiement partiel"],["avance","⬆ Avance / Acompte"]].map(([v,l])=>(
                   <label key={v} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:"#1a1a2e",
                     padding:"7px 10px",borderRadius:8,background:form.statut===v?"#f3e5f5":"transparent",
                     border:`1px solid ${form.statut===v?VIO:"transparent"}`,transition:"all .15s"}}>
-                    <input type="radio" name="st" value={v} checked={form.statut===v} onChange={()=>setForm({...form,statut:v})} style={{accentColor:VIO}}/>{l}
+                    <input type="radio" name="st" value={v} checked={form.statut===v} onChange={()=>setForm({...form,statut:v,avances:[]})} style={{accentColor:VIO}}/>{l}
                   </label>
                 ))}
               </div>
+              {form.statut==="avance"&&(
+                <div style={{marginTop:10,padding:"12px 14px",background:"#fffbe6",border:"1px solid #F8EA11",borderRadius:8}}>
+                  <p style={{fontSize:12,fontWeight:700,color:VIO2,margin:"0 0 8px"}}>💰 Suivi des acomptes progressifs</p>
+                  <div style={{display:"flex",gap:6,marginBottom:8}}>
+                    <input type="number" min="0" style={{...S.inp,flex:1,fontSize:12}} placeholder="Montant avance FCFA..." value={avanceSaisie} onChange={e=>setAvanceSaisie(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAvance()}/>
+                    <UBtn small primary onClick={addAvance}>+ Ajouter</UBtn>
+                  </div>
+                  {form.avances.length>0&&(
+                    <div style={{marginBottom:8,background:"#fff",borderRadius:6,overflow:"hidden",border:"1px solid #f0e8a0"}}>
+                      {form.avances.map((a,i)=>(
+                        <div key={a.id||i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#555",padding:"5px 8px",borderBottom:i<form.avances.length-1?"1px solid #f0e8a0":"none"}}>
+                          <span style={{color:"#777"}}>Acompte {i+1} — {a.date}</span>
+                          <span style={{display:"flex",gap:8,alignItems:"center"}}>
+                            <b style={{color:"#2e7d32"}}>{Number(a.montant).toLocaleString("fr-FR")} F</b>
+                            <span style={{cursor:"pointer",color:"#B71C1C",fontSize:14,fontWeight:700,lineHeight:1}} onClick={()=>removeAvance(a.id)}>✕</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{borderTop:"1px solid #F8EA11",paddingTop:8,marginTop:4}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
+                      <span style={{color:"#555"}}>Total acomptes versés :</span>
+                      <span style={{fontWeight:700,color:"#2e7d32"}}>{totalAvances.toLocaleString("fr-FR")} FCFA</span>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,padding:"6px 8px",background:resteAPayer<=0?"#e8f5e9":"#ffebee",borderRadius:6}}>
+                      <span style={{color:resteAPayer>0?"#B71C1C":"#2e7d32"}}>Reste à payer :</span>
+                      <span style={{color:resteAPayer>0?"#B71C1C":"#2e7d32"}}>{resteAPayer<=0?"✓ Totalement soldé":resteAPayer.toLocaleString("fr-FR")+" FCFA"}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </Field>
           </Card>
           <div style={{background:VIO,borderRadius:12,padding:18,color:"#fff"}}>
             <p style={{fontSize:12,opacity:.75,margin:"0 0 4px"}}>Total commande</p>
             <div style={{fontSize:24,fontWeight:800,color:YEL,letterSpacing:-1,margin:"0 0 10px"}}>{FMT(total)}</div>
+            {form.statut==="avance"&&form.avances.length>0&&(
+              <div style={{fontSize:12,marginBottom:8,padding:"8px 10px",background:"rgba(255,255,255,.1)",borderRadius:6}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span style={{opacity:.8}}>Acomptes versés :</span>
+                  <span style={{fontWeight:700,color:"#a5d6a7"}}>{FMT(totalAvances)}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <span style={{opacity:.8}}>Reste à payer :</span>
+                  <span style={{fontWeight:700,color:resteAPayer>0?"#ffcdd2":"#a5d6a7"}}>{resteAPayer<=0?"✓ Soldé":FMT(resteAPayer)}</span>
+                </div>
+              </div>
+            )}
             <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,borderTop:"1px solid rgba(255,255,255,.15)"}}>
               <span style={{fontSize:12,opacity:.75}}>{totalQte} poulets</span>
               <span style={{background:YEL,color:VIO2,fontSize:10,fontWeight:700,padding:"3px 10px",borderRadius:20}}>
-                {form.statut==="paye"?"Payé":"En attente"}
+                {form.statut==="paye"?"Payé":form.statut==="avance"?(resteAPayer<=0?"✓ Soldé":"Avance "+Math.round(totalAvances/(total||1)*100)+"%"):"En attente"}
               </span>
             </div>
           </div>
@@ -584,16 +661,36 @@ function ReceiptEditor({ receipts, setReceipts, journal, setJournal, debcred, se
           </Card>
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {saving&&(
+            <div style={{background:"#f3e5f5",border:"1px solid "+VIO,borderRadius:10,padding:"14px 18px",marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:VIO2,marginBottom:6}}>
+                <span style={{fontWeight:600}}>⏳ Enregistrement sécurisé en cours...</span>
+                <span style={{fontWeight:700}}>{Math.round(savePct)}%</span>
+              </div>
+              <div style={{width:"100%",height:8,background:"#e0d0e8",borderRadius:4,overflow:"hidden"}}>
+                <div style={{height:"100%",width:savePct+"%",background:VIO,borderRadius:4,transition:"width .08s linear"}}/>
+              </div>
+              <p style={{fontSize:10,color:"#9e9e9e",margin:"6px 0 0",textAlign:"center"}}>Reçu N°{PAD(form.number)} · Validation · Mise à jour stock & caisse…</p>
+            </div>
+          )}
           <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-            <UBtn onClick={()=>setForm({number:Math.max(...receipts.map(r=>r.number),0)+2,date:TODAY(),client:"",obs:"",items:WEIGHTS.map(w=>({...w,qty:"",effectivePrice:w.price,adjusted:false})),statut:"non-paye"})}>🔄 Nouveau</UBtn>
-            <UBtn primary onClick={handleSave} style={{background:saved?"#2e7d32":VIO}}>
-              {saved?"✓ Enregistré !":"💾 Enregistrer"}
+            <UBtn onClick={()=>{setForm({number:Math.max(...receipts.map(r=>r.number),0)+2,date:TODAY(),client:"",obs:"",items:WEIGHTS.map(w=>({...w,qty:"",effectivePrice:w.price,adjusted:false})),statut:"non-paye",avances:[]});setCustomClient("");setSelCat("");}} disabled={saving}>🔄 Nouveau</UBtn>
+            <UBtn primary onClick={handleSave} style={{background:saved?"#2e7d32":saving?"#888":VIO,minWidth:168}} disabled={saving||saved}>
+              {saving?"⏳ Enregistrement...":saved?"✓ Enregistré !":"💾 Enregistrer"}
             </UBtn>
           </div>
           <Card style={{padding:0,overflow:"hidden"}}>
-            <div style={{padding:"12px 18px",borderBottom:"1px solid #ece6f0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{padding:"12px 18px",borderBottom:"1px solid #ece6f0",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
               <span style={{fontSize:14,fontWeight:600,color:"#1a1a2e"}}>Détails des Produits</span>
-              <span style={{fontSize:11,color:"#9e9e9e"}}>Modifier le prix = réduction automatique</span>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <select style={{...S.inp,width:"auto",fontSize:12,padding:"5px 10px"}} value={selCat} onChange={e=>setSelCat(e.target.value)}>
+                  <option value="">▼ Catégorie rapide...</option>
+                  {WEIGHTS.map(w=>(
+                    <option key={w.code} value={w.code}>{w.label}{w.price?" — "+w.price.toLocaleString("fr-FR")+" F/kg":""}</option>
+                  ))}
+                </select>
+                {selCat&&<span style={{fontSize:11,color:VIO,fontWeight:600}}>↓ Saisir la qté en surbrillance</span>}
+              </div>
             </div>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -609,8 +706,9 @@ function ReceiptEditor({ receipts, setReceipts, journal, setJournal, debcred, se
                     const hasQty=Number(item.qty)>0;
                     const isAdj=item.adjusted&&item.effectivePrice!==item.price;
                     const lineTotal=(Number(item.qty)||0)*(item.effectivePrice||0);
+                    const isSelected=selCat===item.code;
                     return (
-                      <tr key={i} style={{background:hasQty?"#f9f5fb":(i%2===0?"#fff":"#fafafa"),borderBottom:"1px solid #ece6f0"}}>
+                      <tr key={i} style={{background:isSelected?"#fff8e1":hasQty?"#f9f5fb":(i%2===0?"#fff":"#fafafa"),borderBottom:"1px solid #ece6f0",outline:isSelected?"2px solid "+YEL:"none",outlineOffset:-1}}>
                         <td style={S.td}>
                           <div style={{fontWeight:600,fontSize:13}}>{item.label}</div>
                           <div style={{fontSize:11,color:"#9e9e9e"}}>{item.code}</div>
@@ -688,8 +786,9 @@ function JournalView({ journal, setJournal, sendToTrash }) {
     const g={};
     journal.forEach(e=>{
       const k=e.receiptId||e.date+"-"+e.client;
-      if(!g[k]) g[k]={id:k,date:e.date,client:e.client,items:[],total:0,totalQte:0};
+      if(!g[k]) g[k]={id:k,date:e.date,client:e.client,items:[],total:0,totalQte:0,statut:e.statut||"non-paye"};
       g[k].items.push(e); g[k].total+=e.montant; g[k].totalQte+=e.qty;
+      if(e.statut) g[k].statut=e.statut;
     });
     return Object.values(g).sort((a,b)=>b.date.localeCompare(a.date));
   },[journal]);
@@ -868,52 +967,113 @@ function JournalView({ journal, setJournal, sendToTrash }) {
 
       {tab==="comptable" && (
         <div>
-          <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-            <div style={{display:"flex",gap:10}}>
-              <Stat label="Cpt 701" value={FMT(total)} color="#2e7d32" bg="#e8f5e9" small/>
-              <Stat label="Cpt 57" value={FMT(total)} color={VIO} bg="#f3e5f5" small/>
-            </div>
-            <div style={{marginLeft:"auto",display:"flex",gap:10,alignItems:"center"}}>
-              <input type="date" style={{...S.inp,width:170}} value={fd} onChange={e=>setFd(e.target.value)}/>
-              {fd&&<UBtn small onClick={()=>setFd("")}>✕</UBtn>}
-            </div>
-          </div>
-          <Card style={{padding:0,overflow:"hidden"}}>
-            <div style={{padding:"12px 18px",borderBottom:"1px solid #ece6f0",background:VIO}}>
-              <span style={{fontSize:13,fontWeight:700,color:YEL}}>JOURNAL COMPTABLE — SYSCOHADA</span>
-            </div>
-            <div style={{overflowX:"auto",maxHeight:500}}>
-              <table style={{width:"100%",borderCollapse:"collapse",minWidth:650}}>
-                <thead>
-                  <tr style={{background:"#faf5fb"}}>
-                    {["Date","Libellé","N° Cpt","Intitulé","Débit","Crédit"].map((h,i)=>(
-                      <th key={i} style={{...S.th,textAlign:i>2?"right":"left"}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {byCat.map((cat,i)=>[
-                    <tr key={i+"a"} style={{background:i%2===0?"#fff":"#faf5fb",borderBottom:"1px solid #ece6f0"}}>
-                      <td style={{...S.td,fontSize:12,color:"#555"}}>{fd||TODAY()}</td>
-                      <td style={{...S.td,fontWeight:500}}>Vente {cat.label} ({cat.qty} pcs)</td>
-                      <td style={{...S.td,fontFamily:"monospace",fontWeight:700,color:"#1565c0"}}>57</td>
-                      <td style={{...S.td,fontSize:12,color:"#555"}}>Caisse</td>
-                      <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#2e7d32"}}>{FMT(cat.total)}</td>
-                      <td style={{...S.td,textAlign:"right",color:"#bbb"}}>—</td>
-                    </tr>,
-                    <tr key={i+"b"} style={{background:i%2===0?"#fff":"#faf5fb",borderBottom:"1px solid #ece6f0"}}>
-                      <td style={{...S.td,fontSize:12,color:"#555"}}>{fd||TODAY()}</td>
-                      <td style={{...S.td,fontWeight:500,paddingLeft:28,fontStyle:"italic",color:"#555"}}>Contre-partie vente</td>
-                      <td style={{...S.td,fontFamily:"monospace",fontWeight:700,color:"#2e7d32"}}>701</td>
-                      <td style={{...S.td,fontSize:12,color:"#555"}}>Ventes marchandises</td>
-                      <td style={{...S.td,textAlign:"right",color:"#bbb"}}>—</td>
-                      <td style={{...S.td,textAlign:"right",fontWeight:700,color:VIO}}>{FMT(cat.total)}</td>
-                    </tr>
-                  ])}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+          {(()=>{
+            const TVA_RATE=0.18;
+            const totalTTC=total;
+            const totalHT=Math.round(totalTTC/(1+TVA_RATE));
+            const totalTVA=totalTTC-totalHT;
+            const totalTTCAll=filtered.reduce((s,e)=>s+e.montant,0);
+            const totalHTAll=Math.round(totalTTCAll/(1+TVA_RATE));
+            const totalTVAAll=totalTTCAll-totalHTAll;
+            return (
+              <>
+                <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap",alignItems:"flex-end"}}>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    <Stat label="Cpt 411/57 (TTC)" value={FMT(totalTTCAll)} color="#1565c0" bg="#e3f2fd" small/>
+                    <Stat label="Cpt 701 (HT)" value={FMT(totalHTAll)} color="#2e7d32" bg="#e8f5e9" small/>
+                    <Stat label="Cpt 4435 (TVA 18%)" value={FMT(totalTVAAll)} color="#e65100" bg="#fff3e0" small/>
+                  </div>
+                  <div style={{marginLeft:"auto",display:"flex",gap:10,alignItems:"center"}}>
+                    <input type="date" style={{...S.inp,width:170}} value={fd} onChange={e=>setFd(e.target.value)}/>
+                    {fd&&<UBtn small onClick={()=>setFd("")}>✕</UBtn>}
+                  </div>
+                </div>
+                <div style={{background:"#fff8e1",border:"1px solid #F8EA11",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:11,color:"#555",lineHeight:1.7}}>
+                  <b style={{color:VIO2,fontSize:12}}>Méthode comptable ivoirienne (SYSCOHADA) — Ventes de volailles avec TVA 18%</b><br/>
+                  Pour chaque vente : <b style={{color:"#1565c0"}}>Débit 411</b> (vente à crédit) ou <b style={{color:"#1565c0"}}>Débit 57</b> (vente comptant) = Montant TTC<br/>
+                  Contre-partie : <b style={{color:"#2e7d32"}}>Crédit 701</b> Ventes volailles HT + <b style={{color:"#e65100"}}>Crédit 4435</b> TVA collectée 18%<br/>
+                  <i>TVA déductible (fournisseurs) via Cpt 4452 · TVA récupérable (clients) via Cpt 4435</i>
+                </div>
+                <Card style={{padding:0,overflow:"hidden"}}>
+                  <div style={{padding:"12px 18px",borderBottom:"1px solid #ece6f0",background:VIO}}>
+                    <span style={{fontSize:13,fontWeight:700,color:YEL}}>JOURNAL COMPTABLE — SYSCOHADA · CÔTE D'IVOIRE</span>
+                  </div>
+                  <div style={{overflowX:"auto",maxHeight:540}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",minWidth:750}}>
+                      <thead>
+                        <tr style={{background:"#faf5fb"}}>
+                          {["Date","Libellé de l'opération","N° Cpt","Intitulé du compte","Débit","Crédit"].map((h,i)=>(
+                            <th key={i} style={{...S.th,textAlign:i>2?"right":"left",padding:"9px 10px"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {byReceipt.filter(r=>!fd||r.date===fd).map((rec,i)=>{
+                          const ttc=rec.total;
+                          const ht=Math.round(ttc/(1+TVA_RATE));
+                          const tva=ttc-ht;
+                          const bg=i%2===0?"#fff":"#faf5fb";
+                          const receiptStatut=rec.statut||"non-paye";
+                          const isPaid=receiptStatut==="paye";
+                          const cptDebit=isPaid?"57":"411";
+                          const cptDebitLabel=isPaid?"Caisse — espèces (Cpt 57)":"Clients débiteurs (Cpt 411)";
+                          return [
+                            <tr key={i+"hdr"} style={{background:"#f0e8f8"}}>
+                              <td colSpan={6} style={{padding:"5px 12px",fontSize:11,color:VIO2,fontWeight:600,borderBottom:"1px solid #e0cce8"}}>
+                                ▶ {rec.date} · {rec.client} · {rec.totalQte} poulets · TTC {FMT(ttc)}
+                              </td>
+                            </tr>,
+                            <tr key={i+"a"} style={{background:bg,borderBottom:"1px solid #ece6f0"}}>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>{rec.date}</td>
+                              <td style={{...S.td,fontWeight:600,padding:"7px 10px"}}>Vente volailles — {rec.client} ({rec.totalQte} pcs)</td>
+                              <td style={{...S.td,fontFamily:"monospace",fontWeight:800,color:"#1565c0",padding:"7px 10px"}}>{cptDebit}</td>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>{cptDebitLabel}</td>
+                              <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#1565c0",padding:"7px 10px"}}>{FMT(ttc)}</td>
+                              <td style={{...S.td,textAlign:"right",color:"#bbb",padding:"7px 10px"}}>—</td>
+                            </tr>,
+                            <tr key={i+"b"} style={{background:bg,borderBottom:"1px solid #ece6f0"}}>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>{rec.date}</td>
+                              <td style={{...S.td,padding:"7px 10px 7px 24px",fontStyle:"italic",color:"#555",fontSize:12}}>Ventes de volailles (HT 82% du TTC)</td>
+                              <td style={{...S.td,fontFamily:"monospace",fontWeight:800,color:"#2e7d32",padding:"7px 10px"}}>701</td>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>Ventes de volailles — HT</td>
+                              <td style={{...S.td,textAlign:"right",color:"#bbb",padding:"7px 10px"}}>—</td>
+                              <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#2e7d32",padding:"7px 10px"}}>{FMT(ht)}</td>
+                            </tr>,
+                            <tr key={i+"c"} style={{background:bg,borderBottom:"2px solid #e0cce8"}}>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>{rec.date}</td>
+                              <td style={{...S.td,padding:"7px 10px 7px 24px",fontStyle:"italic",color:"#555",fontSize:12}}>TVA collectée sur ventes volailles (18%)</td>
+                              <td style={{...S.td,fontFamily:"monospace",fontWeight:800,color:"#e65100",padding:"7px 10px"}}>4435</td>
+                              <td style={{...S.td,fontSize:12,color:"#555",padding:"7px 10px"}}>TVA collectée — récupérable</td>
+                              <td style={{...S.td,textAlign:"right",color:"#bbb",padding:"7px 10px"}}>—</td>
+                              <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#e65100",padding:"7px 10px"}}>{FMT(tva)}</td>
+                            </tr>
+                          ];
+                        })}
+                        {byReceipt.filter(r=>!fd||r.date===fd).length===0&&(
+                          <tr><td colSpan={6} style={{padding:32,textAlign:"center",color:"#bbb",fontStyle:"italic"}}>Aucune vente. Saisissez une vente via la section Reçu.</td></tr>
+                        )}
+                      </tbody>
+                      {byReceipt.filter(r=>!fd||r.date===fd).length>0&&(
+                        <tfoot>
+                          <tr style={{background:VIO}}>
+                            <td colSpan={4} style={{padding:"10px 14px",fontWeight:700,color:"#fff",fontSize:13}}>TOTAUX PÉRIODE</td>
+                            <td style={{padding:"10px 14px",textAlign:"right",fontWeight:800,color:YEL,fontSize:14}}>{FMT(totalTTCAll)}</td>
+                            <td style={{padding:"10px 14px",textAlign:"right",fontWeight:800,color:YEL,fontSize:14}}>{FMT(totalHTAll+totalTVAAll)}</td>
+                          </tr>
+                          <tr style={{background:"#faf5fb"}}>
+                            <td colSpan={3} style={{padding:"6px 14px",fontSize:11,color:"#555"}}>HT → Cpt 701</td>
+                            <td style={{padding:"6px 14px",fontSize:12,fontWeight:700,color:"#2e7d32"}}>{FMT(totalHTAll)}</td>
+                            <td style={{padding:"6px 14px",fontSize:11,color:"#555"}}>TVA 18% → Cpt 4435</td>
+                            <td style={{padding:"6px 14px",fontSize:12,fontWeight:700,color:"#e65100"}}>{FMT(totalTVAAll)}</td>
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+                </Card>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -1305,6 +1465,7 @@ const SAMPLE_BDL = {
   number: "BL-2026-0001",
   date: "2026-04-16",
   mode_paiement: "",
+  obs: "",
   client: {
     name: "SOCOPRIX",
     address: "Palmeraie, Cocody, Côte d'Ivoire",
@@ -1312,7 +1473,9 @@ const SAMPLE_BDL = {
     tel: "+225 07 08 39 42 29",
   },
   items: [
-    { id: 1, desc: "Poulet de chair 1,2 Ko", qty: 20, poids: "24,000", pu: 2600, total: 52000 },
+    { id: 1, desc: "Poulet de chair -1Ko/1,1Ko", qty: 10, poids: "10,500", pu: 0, total: 0 },
+    { id: 2, desc: "Poulet de chair 1,2 Ko", qty: 20, poids: "24,000", pu: 0, total: 0 },
+    { id: 3, desc: "Poulet de chair 1,3 Ko", qty: 15, poids: "19,500", pu: 0, total: 0 },
   ],
   locked: true,
   createdAt: new Date().toISOString(),
@@ -1469,11 +1632,29 @@ function FactureDoc({ facture, onChange, readonly = false }) {
       </div>
 
       {/* ─── TITLE ─── */}
-      <div style={{ padding: "16px 0 12px", textAlign: "center" }}>
-        <h1 style={{ fontSize: 20, fontWeight: 900, margin: 0, letterSpacing: 1, color: "#1a1a2e" }}>
-          {isVente ? "FACTURE DE VENTE" : "BON DE LIVRAISON"}
-        </h1>
-      </div>
+      {isVente ? (
+        <div style={{ padding: "16px 0 12px", textAlign: "center" }}>
+          <h1 style={{ fontSize: 20, fontWeight: 900, margin: 0, letterSpacing: 1, color: "#1a1a2e" }}>
+            FACTURE DE VENTE
+          </h1>
+        </div>
+      ) : (
+        <div style={{ padding: "14px 0 12px", textAlign: "center", background: "linear-gradient(135deg,#A2177F 0%,#7B1160 100%)" }}>
+          <span style={{ fontSize: 10, letterSpacing: "3px", color: "rgba(255,255,255,.65)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>
+            Wawi Travaux et Services
+          </span>
+          <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0, letterSpacing: 2, color: "#F8EA11", textTransform: "uppercase" }}>
+            BON DE LIVRAISON
+          </h1>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 6 }}>
+            <div style={{ height: 1, width: 36, background: "rgba(248,234,17,.4)" }} />
+            <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 800, color: "#fff", letterSpacing: "1px", padding: "2px 12px", background: "rgba(0,0,0,.25)", borderRadius: 4 }}>
+              {facture.number}
+            </span>
+            <div style={{ height: 1, width: 36, background: "rgba(248,234,17,.4)" }} />
+          </div>
+        </div>
+      )}
 
       {/* ─── PRODUCTS TABLE ─── */}
       <table style={{ width: "100%", borderCollapse: "collapse", border: "2px solid #1a1a2e", fontSize: 12 }}>
@@ -1544,28 +1725,61 @@ function FactureDoc({ facture, onChange, readonly = false }) {
         </div>
       )}
 
-      {/* ─── SIGNATURE BLOCK ─── */}
-      <div style={{ marginTop: 24, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 90 }}>
-          <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 30px", color: VIO, letterSpacing: "0.5px" }}>
-            Cachet & Signature Émetteur
-          </p>
-          {/* NAME AT BOTTOM = LOCKED */}
-          <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 8 }}>
-            {WTS_EMITTER.name} 🔒
-          </p>
+      {/* ─── SIGNATURE BLOCK (Facture de Vente only) ─── */}
+      {isVente && (
+        <div style={{ marginTop: 24, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 90 }}>
+            <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 30px", color: VIO, letterSpacing: "0.5px" }}>
+              Cachet & Signature Émetteur
+            </p>
+            <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 8 }}>
+              {WTS_EMITTER.name} 🔒
+            </p>
+          </div>
+          <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 90 }}>
+            <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 30px", color: VIO, letterSpacing: "0.5px" }}>
+              Cachet & Signature Client
+            </p>
+            <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 8 }}>
+              {facture.client?.name || "—"} 🔒
+            </p>
+          </div>
         </div>
-        <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 90 }}>
-          <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 30px", color: VIO, letterSpacing: "0.5px" }}>
-            Cachet & Signature Client
-          </p>
-          {/* CLIENT NAME AT BOTTOM = LOCKED (mirrors the one at top, uneditable) */}
-          <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 8 }}>
-            {facture.client?.name || "—"} 🔒
-          </p>
-        </div>
-      </div>
+      )}
 
+      {/* BL-specific: total qty + observations block */}
+      {!isVente && (
+        <>
+          <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ border: "2px solid #1a1a2e", padding: "12px 16px" }}>
+              <p style={{ fontSize: 11, fontWeight: 800, color: VIO, margin: "0 0 6px" }}>OBSERVATIONS / AVIS</p>
+              <EField value={facture.obs} onChange={v => onChange({ ...facture, obs: v })} multiline
+                placeholder="Observations sur la livraison..." style={{ fontSize: 11, minHeight: 48 }} />
+            </div>
+            <div style={{ border: "2px solid #1a1a2e", padding: "12px 16px", background: "#faf5fb" }}>
+              <p style={{ fontSize: 11, fontWeight: 800, color: VIO, margin: "0 0 8px" }}>RÉCAPITULATIF</p>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "#555" }}>Nombre de lignes :</span>
+                <span style={{ fontWeight: 700 }}>{facture.items.length}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: VIO, paddingTop: 6, borderTop: "1px solid #ece6f0" }}>
+                <span>TOTAL QUANTITÉ :</span>
+                <span>{facture.items.reduce((s,i)=>(s+Number(i.qty)||0),0)} pcs</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 80 }}>
+              <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 24px", color: VIO }}>Cachet & Signature Émetteur</p>
+              <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 6 }}>{WTS_EMITTER.name} 🔒</p>
+            </div>
+            <div style={{ border: "2px solid #1a1a2e", padding: "14px 16px", minHeight: 80 }}>
+              <p style={{ fontSize: 11, fontWeight: 800, margin: "0 0 24px", color: VIO }}>Cachet & Signature Récepteur</p>
+              <p style={{ fontSize: 11, fontWeight: 700, margin: 0, color: "#555", borderTop: "1px dashed #ccc", paddingTop: 6 }}>{facture.client?.name || "—"} 🔒</p>
+            </div>
+          </div>
+        </>
+      )}
       {/* Footer mention */}
       <p style={{ fontSize: 9, color: "#9e9e9e", textAlign: "center", marginTop: 16, letterSpacing: "0.5px" }}>
         Document généré par WTS Manager · Wawi Travaux et Services · Abidjan, Côte d'Ivoire
@@ -1874,6 +2088,47 @@ function RapportView({ journal, debcred, nonPayeurs, receipts }) {
 
   const print = () => window.print();
 
+  const downloadExcel = () => {
+    const d = new Date(rd);
+    const dateFR = d.toLocaleDateString("fr-FR");
+    let csv = "﻿";
+    csv += "WAWI TRAVAUX ET SERVICES \u2014 POINTS DE VENTE JOURNALIERS\n";
+    csv += `Date: ${dateFR}\n\n`;
+    const wCols = activeWeights.map(w => w.label).join(";");
+    csv += `N\u00B0;DATE;CLIENT / ACHETEUR;${wCols};QT\u00C9 TOTALE\n`;
+    byClient.forEach((cl, i) => {
+      const wQty = activeWeights.map(w => cl.items[w.code] > 0 ? cl.items[w.code] : "").join(";");
+      csv += `${i + 1};${dateFR};${cl.client};${wQty};${cl.totalQte}\n`;
+    });
+    const wTotals = activeWeights.map(w => {
+      const t = dayJ.filter(e => e.code === w.code).reduce((s, e) => s + e.qty, 0);
+      return t > 0 ? t : "";
+    }).join(";");
+    csv += `;;TOTAL JOURN\u00C9E;${wTotals};${totalQte}\n`;
+    csv += `\nR\u00C9CAPITULATIF FINANCIER\n`;
+    csv += `Total ventes (TTC);${totalVentes} FCFA\n`;
+    const ht = Math.round(totalVentes / 1.18);
+    csv += `Montant HT (Cpt 701);${ht} FCFA\n`;
+    csv += `TVA collect\u00E9e 18% (Cpt 4435);${totalVentes - ht} FCFA\n`;
+    csv += `Montant impay\u00E9 (Cpt 411);${totalNP} FCFA\n`;
+    csv += `Nombre transactions;${nTx}\n`;
+    if (dayNP.length > 0) {
+      csv += `\nCLIENTS NON PAYEURS\n`;
+      csv += `N\u00B0;CLIENT;QT\u00C9;PRIX UNIT;MONTANT D\u00DB;STATUT\n`;
+      dayNP.forEach((r, i) => {
+        csv += `${i + 1};${r.op};${r.qte};${r.pu || ""};${r.montant} FCFA;${r.statut}\n`;
+      });
+    }
+    csv += `\nG\u00E9n\u00E9r\u00E9 le ${new Date().toLocaleDateString("fr-FR")} par WTS Manager\n`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `WTS_PointVente_${rd.replace(/-/g, "")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const byClient = useMemo(() => {
     const g = {};
     dayJ.forEach(e => {
@@ -1898,11 +2153,12 @@ function RapportView({ journal, debcred, nonPayeurs, receipts }) {
 
       {tab === "daily" && (
         <div>
-          <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-end" }}>
+          <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
             <Field label="Date du rapport" style={{ width: 200 }}>
               <input style={S.inp} type="date" value={rd} onChange={e => setRd(e.target.value)} />
             </Field>
-            <UBtn primary onClick={print}>🖨 Imprimer / Télécharger</UBtn>
+            <UBtn primary onClick={print}>🖨 Imprimer / PDF</UBtn>
+            <UBtn onClick={downloadExcel}>📊 Télécharger Excel (CSV)</UBtn>
           </div>
           <div id="point-ventes-print">
             {/* Header */}
@@ -2243,6 +2499,7 @@ function WTSApp() {
         number: genFactureNum(type, factures),
         date: TODAY(),
         mode_paiement: type === "vente" ? "Espèce" : "",
+        obs: "",
         client: { name: "", address: "", city: "", tel: "" },
         items: [{ id: 1, desc: "", qty: 1, poids: "", pu: 0, total: 0 }],
         locked: false,
@@ -2250,7 +2507,7 @@ function WTSApp() {
       };
       setFactures(p => [newFac, ...p]);
       setLoading(false);
-    }, 5000);
+    }, 4000);
   };
 
   if (loading) return <LoadingScreen section={loadingSection} animIdx={animIdx} duration={loadingDuration} />;
